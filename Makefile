@@ -9,7 +9,7 @@ build: bundle.tar.gz
 ## Build the lightweight binary (downloads dependencies on first run)
 build-online:
 	@tar czf bundle.tar.gz --files-from /dev/null
-	go build -ldflags "-X main.version=$(VERSION)" -o dist/portago .
+	go build -ldflags "-X main.version=$(VERSION)" -o dist/portago-flatpack .
 
 ## Create the bundle (runs full setup, strips, compresses) then builds the final binary
 package:
