@@ -1,4 +1,4 @@
-.PHONY: build build-online package install setup run docker-build docker-run clean
+.PHONY: build build-online package package-flatpack-all install setup run test-platforms clean
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -9,16 +9,30 @@ build: bundle.tar.gz
 ## Build the lightweight binary (downloads dependencies on first run)
 build-online:
 	@tar czf bundle.tar.gz --files-from /dev/null
-	go build -ldflags "-X main.version=$(VERSION)" -o dist/portago-flatpack .
+	go build -ldflags "-s -w -X main.version=$(VERSION)" -o dist/portago-flatpack .
 
-## Create the bundle (runs full setup, strips, compresses) then builds the final binary
+## Create the bundle and build both binaries (bundled + flatpack)
+## NOTE: The bundle is platform-specific — it contains native nvim, Mason
+## tools, and treesitter parsers for the build machine's OS/arch only.
+## For multi-platform releases, run this on each target platform or in CI.
 package:
 	@chmod +x scripts/package.sh
 	VERSION=$(VERSION) scripts/package.sh
 
+## Cross-compile flatpack binaries for all supported platforms
+package-flatpack-all:
+	@tar czf bundle.tar.gz --files-from /dev/null
+	@mkdir -p dist
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w -X main.version=$(VERSION)" -o dist/portago-flatpack-darwin-arm64 .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w -X main.version=$(VERSION)" -o dist/portago-flatpack-darwin-amd64 .
+	CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -ldflags "-s -w -X main.version=$(VERSION)" -o dist/portago-flatpack-linux-arm64 .
+	CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -ldflags "-s -w -X main.version=$(VERSION)" -o dist/portago-flatpack-linux-amd64 .
+	@echo "==> Built 4 flatpack binaries in dist/"
+	@ls -lh dist/portago-flatpack-*
+
 ## Install to GOPATH/bin
 install:
-	go install -ldflags "-X main.version=$(VERSION)" .
+	go install -ldflags "-s -w -X main.version=$(VERSION)" .
 
 ## First-time setup using the shell wrapper (for development)
 setup:
@@ -29,13 +43,10 @@ setup:
 run:
 	@bin/portago
 
-## Build the Docker image
-docker-build:
-	docker build -t portago .
-
-## Run portago in Docker, mounting the current directory as /work
-docker-run:
-	docker run -it --rm -v "$$(pwd):/work" portago
+## Test portago binary on multiple Linux distributions via Docker
+test-platforms:
+	@chmod +x scripts/test-platforms.sh
+	@scripts/test-platforms.sh
 
 ## Remove build artifacts and ~/.portago runtime data
 clean:

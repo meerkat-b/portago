@@ -149,7 +149,11 @@ func portagoDir(persist bool) (dir string, isTemp bool, err error) {
 
 // persistentStateDir returns a directory for mutable nvim state (undo, shada,
 // swap) that survives temp cache rebuilds and reboots.
+// Respects $XDG_STATE_HOME if set, otherwise defaults to ~/.local/state.
 func persistentStateDir() (string, error) {
+	if xdgState := os.Getenv("XDG_STATE_HOME"); xdgState != "" {
+		return filepath.Join(xdgState, "portago"), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

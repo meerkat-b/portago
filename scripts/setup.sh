@@ -16,7 +16,7 @@ mkdir -p "$PORTAGO_DIR"/{data,state,cache}
 echo "==> Installing plugins via lazy.nvim..."
 nvim --headless "+Lazy! sync" +qa 2>&1
 
-echo "==> Installing Mason tools (gopls, delve, stylua, tree-sitter-cli)..."
+echo "==> Installing Mason tools (gopls, delve, gomodifytags, impl)..."
 nvim --headless "+MasonToolsInstallSync" +qa 2>&1
 
 # Mason installs tree-sitter-cli which is needed to compile TreeSitter parsers.
@@ -32,6 +32,6 @@ if [ ! -x "$TS_CLI" ]; then
 fi
 
 echo "==> Installing TreeSitter parsers..."
-nvim --headless "+lua require('nvim-treesitter').install({'bash','c','diff','go','html','lua','luadoc','markdown','markdown_inline','query','vim','vimdoc'})" +qa 2>&1
+nvim --headless "+lua require('nvim-treesitter').install({'bash','diff','go','lua','luadoc','markdown','markdown_inline','query','vim','vimdoc'})" +qa 2>&1
 
 echo "==> Setup complete. Run portago with: $PORTAGO_DIR/bin/portago"

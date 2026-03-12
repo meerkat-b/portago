@@ -13,6 +13,22 @@
 #
 set -euo pipefail
 
+# Portable readlink -f (macOS BSD readlink doesn't support -f)
+resolve_path() {
+  if readlink -f "$1" 2>/dev/null; then return; fi
+  # Fallback: Python (ships with Xcode CLI tools on macOS)
+  if python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1" 2>/dev/null; then return; fi
+  # Last resort: manual symlink resolution
+  local target="$1"
+  local dir
+  while [ -L "$target" ]; do
+    dir="$(cd -P "$(dirname "$target")" && pwd)"
+    target="$(readlink "$target")"
+    [[ "$target" != /* ]] && target="$dir/$target"
+  done
+  cd -P "$(dirname "$target")" && echo "$(pwd)/$(basename "$target")"
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 STAGING_DIR="$PROJECT_DIR/.staging"
@@ -34,6 +50,11 @@ cd "$PROJECT_DIR"
 # Create an empty bundle.tar.gz so the embed directive is satisfied
 tar czf "$BUNDLE_FILE" --files-from /dev/null
 go build -ldflags "-X main.version=$VERSION" -o "$STAGING_DIR/portago-bootstrap" .
+
+# Also build the flatpack (online) binary while the empty bundle is in place
+echo "==> Building flatpack (online) binary..."
+mkdir -p "$PROJECT_DIR/dist"
+go build -ldflags "-s -w -X main.version=$VERSION" -o "$PROJECT_DIR/dist/portago-flatpack" .
 
 # --- Step 2: Run setup using the bootstrap binary ---
 echo "==> Running setup to populate staging directory..."
@@ -166,7 +187,7 @@ fi
 # when extracted on a different machine.
 echo "==> Resolving symlinks to real files..."
 find "$PORTAGO_HOME" -type l | while read -r link; do
-  target="$(readlink -f "$link" 2>/dev/null)"
+  target="$(resolve_path "$link")"
   if [ -z "$target" ]; then
     echo "  WARNING: Cannot resolve symlink, removing: $link"
     rm -f "$link"
@@ -242,11 +263,15 @@ echo "==> Building final portago binary with embedded bundle..."
 cd "$PROJECT_DIR"
 go build -ldflags "-s -w -X main.version=$VERSION" -o dist/portago .
 
-BINARY_SIZE=$(ls -lh dist/portago | awk '{print $5}')
-echo "==> Final binary: dist/portago ($BINARY_SIZE)"
+BUNDLED_SIZE=$(ls -lh dist/portago | awk '{print $5}')
+FLATPACK_SIZE=$(ls -lh dist/portago-flatpack | awk '{print $5}')
+echo "==> Bundled binary:  dist/portago ($BUNDLED_SIZE)"
+echo "==> Flatpack binary: dist/portago-flatpack ($FLATPACK_SIZE)"
 
 # Clean up (Go module cache files are read-only)
 chmod -R u+w "$STAGING_DIR" 2>/dev/null || true
 rm -rf "$STAGING_DIR"
 
-echo "==> Done! Fully self-contained binary at: $PROJECT_DIR/dist/portago"
+echo "==> Done! Both binaries at: $PROJECT_DIR/dist/"
+echo "    portago          — fully self-contained, no internet needed"
+echo "    portago-flatpack — lightweight, downloads dependencies on first run"
