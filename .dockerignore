@@ -1,0 +1,5 @@
+# Ignore local runtime directories — these are rebuilt inside the image
+data/
+state/
+cache/
+.git/
