@@ -47,34 +47,49 @@ func isBundled() bool {
 	return len(bundleData) > 1024
 }
 
+// bundleHash returns the first 12 hex characters of the SHA256 of the embedded bundle.
+// Used as a content-addressed cache key for the temp extraction directory.
+func bundleHash() string {
+	h := sha256.Sum256(bundleData)
+	return hex.EncodeToString(h[:6])
+}
+
 func main() {
 	setup := flag.Bool("setup", false, "Force re-extract and re-run setup")
-	clean := flag.Bool("clean", false, "Remove ~/.portago and exit (fresh start)")
+	clean := flag.Bool("clean", false, "Remove all portago data and exit")
 	showVersion := flag.Bool("version", false, "Print version and exit")
+	persist := flag.Bool("persist", false, "Use ~/.portago instead of temp cache")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("portago %s\n", version)
 		if isBundled() {
-			fmt.Println("  (fully bundled)")
+			fmt.Printf("  (fully bundled, hash %s)\n", bundleHash())
 		} else {
 			fmt.Println("  (downloads dependencies on first run)")
 		}
 		return
 	}
 
-	portagoHome, err := portagoDir()
-	if err != nil {
-		fatal("cannot determine home directory: %v", err)
+	if *clean {
+		doClean()
+		return
 	}
 
-	if *clean {
-		fmt.Printf("==> Removing %s...\n", portagoHome)
-		if err := os.RemoveAll(portagoHome); err != nil {
-			fatal("removing %s: %v", portagoHome, err)
+	portagoHome, err := portagoDir(*persist)
+	if err != nil {
+		fatal("cannot determine directories: %v", err)
+	}
+
+	// Mutable state (undo, shada, swap) lives inside portagoHome when using
+	// ~/.portago, or in a separate persistent dir when using the temp cache.
+	usingTempCache := strings.HasPrefix(portagoHome, os.TempDir())
+	stateDir := filepath.Join(portagoHome, "state")
+	if usingTempCache {
+		stateDir, err = persistentStateDir()
+		if err != nil {
+			fatal("cannot determine state directory: %v", err)
 		}
-		fmt.Println("==> Clean. Run portago again for a fresh setup.")
-		return
 	}
 
 	// First-run detection: check for stamp file
@@ -86,7 +101,7 @@ func main() {
 
 	if needsSetup {
 		if isBundled() {
-			if err := doSetupBundled(portagoHome, stampFile); err != nil {
+			if err := doSetupBundled(portagoHome, stateDir, stampFile); err != nil {
 				fatal("%v", err)
 			}
 		} else {
@@ -99,15 +114,71 @@ func main() {
 		}
 	}
 
-	launchNvim(portagoHome, flag.Args())
+	launchNvim(portagoHome, stateDir, flag.Args())
 }
 
-func portagoDir() (string, error) {
+// portagoDir returns the base directory for portago's extracted data.
+// Priority: --persist flag → existing ~/.portago → temp cache /tmp/portago-<hash>/
+// Once you run with --persist, ~/.portago is created and used on every subsequent run.
+func portagoDir(persist bool) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".portago"), nil
+	persistDir := filepath.Join(home, ".portago")
+
+	if persist || !isBundled() {
+		return persistDir, nil
+	}
+
+	// Check if ~/.portago exists from a previous --persist run
+	if _, err := os.Stat(filepath.Join(persistDir, ".setup-done")); err == nil {
+		return persistDir, nil
+	}
+
+	return filepath.Join(os.TempDir(), "portago-"+bundleHash()), nil
+}
+
+// persistentStateDir returns a directory for mutable nvim state (undo, shada,
+// swap) that survives temp cache rebuilds and reboots.
+func persistentStateDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "state", "portago"), nil
+}
+
+// doClean removes all portago-related directories.
+func doClean() {
+	var dirs []string
+
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".portago"))
+		dirs = append(dirs, filepath.Join(home, ".local", "state", "portago"))
+	}
+
+	// Temp cache directories: /tmp/portago-*
+	if matches, err := filepath.Glob(filepath.Join(os.TempDir(), "portago-*")); err == nil {
+		dirs = append(dirs, matches...)
+	}
+
+	removed := 0
+	for _, d := range dirs {
+		if _, err := os.Stat(d); err == nil {
+			fmt.Printf("==> Removing %s\n", d)
+			if err := os.RemoveAll(d); err != nil {
+				fmt.Fprintf(os.Stderr, "    warning: %v\n", err)
+			}
+			removed++
+		}
+	}
+
+	if removed == 0 {
+		fmt.Println("==> Nothing to clean.")
+	} else {
+		fmt.Println("==> Clean complete.")
+	}
 }
 
 // nvimBin returns the path to the nvim binary.
@@ -129,13 +200,13 @@ func nvimBin(portagoHome string) (string, error) {
 // plugins, Mason tools, and TreeSitter parsers. No internet needed.
 // ---------------------------------------------------------------------------
 
-func doSetupBundled(portagoHome, stampFile string) error {
+func doSetupBundled(portagoHome, stateDir, stampFile string) error {
 	fmt.Println("==> Extracting bundled portago (fully offline)...")
 
 	// Create base directories
-	for _, sub := range []string{"state", "cache"} {
-		if err := os.MkdirAll(filepath.Join(portagoHome, sub), 0o755); err != nil {
-			return fmt.Errorf("creating %s: %w", sub, err)
+	for _, dir := range []string{filepath.Join(portagoHome, "cache"), stateDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("creating %s: %w", dir, err)
 		}
 	}
 
@@ -181,7 +252,8 @@ func doSetupOnline(portagoHome, stampFile string) error {
 		return fmt.Errorf("extracting config: %w", err)
 	}
 
-	env := buildEnv(portagoHome)
+	stateDir := filepath.Join(portagoHome, "state")
+	env := buildEnv(portagoHome, stateDir)
 
 	// Install plugins
 	fmt.Println("==> Installing plugins via lazy.nvim...")
@@ -454,13 +526,13 @@ func runNvimHeadless(portagoHome string, env []string, args ...string) error {
 	return cmd.Run()
 }
 
-func launchNvim(portagoHome string, args []string) {
+func launchNvim(portagoHome, stateDir string, args []string) {
 	nvimPath, err := nvimBin(portagoHome)
 	if err != nil {
 		fatal("%v", err)
 	}
 
-	env := buildEnv(portagoHome)
+	env := buildEnv(portagoHome, stateDir)
 	argv := append([]string{"nvim"}, args...)
 
 	if err := syscall.Exec(nvimPath, argv, env); err != nil {
@@ -468,11 +540,11 @@ func launchNvim(portagoHome string, args []string) {
 	}
 }
 
-func buildEnv(portagoHome string) []string {
+func buildEnv(portagoHome, stateDir string) []string {
 	overrides := map[string]string{
 		"XDG_CONFIG_HOME": portagoHome,
 		"XDG_DATA_HOME":   filepath.Join(portagoHome, "data"),
-		"XDG_STATE_HOME":  filepath.Join(portagoHome, "state"),
+		"XDG_STATE_HOME":  stateDir,
 		"XDG_CACHE_HOME":  filepath.Join(portagoHome, "cache"),
 		"NVIM_APPNAME":    "config",
 	}
