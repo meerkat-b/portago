@@ -262,12 +262,19 @@ func doSetupOnline(portagoHome, stampFile string) error {
 	}
 
 	// Install Mason tools
-	fmt.Println("==> Installing Mason tools (gopls, delve, gomodifytags, impl, tree-sitter-cli)...")
+	fmt.Println("==> Installing Mason tools (gopls, delve, gomodifytags, impl)...")
 	if err := runNvimHeadless(portagoHome, env, "+MasonToolsInstallSync", "+qa"); err != nil {
 		return fmt.Errorf("installing mason tools: %w", err)
 	}
 
-	// Wait for tree-sitter-cli to be available (installed by Mason)
+	// Install tree-sitter-cli separately (only needed for online setup to compile parsers,
+	// not included in ensure_installed since bundled mode ships pre-compiled parsers)
+	fmt.Println("==> Installing tree-sitter-cli (for parser compilation)...")
+	if err := runNvimHeadless(portagoHome, env, "+MasonInstall tree-sitter-cli", "+qa"); err != nil {
+		return fmt.Errorf("installing tree-sitter-cli: %w", err)
+	}
+
+	// Wait for tree-sitter-cli to be available
 	tsCLI := filepath.Join(portagoHome, "data", "config", "mason", "bin", "tree-sitter")
 	fmt.Println("==> Waiting for tree-sitter-cli...")
 	for i := 0; i < 30; i++ {

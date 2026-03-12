@@ -622,7 +622,6 @@ require('lazy').setup({
       -- You can press `g?` for help in this menu.
       local ensure_installed = vim.tbl_keys(servers or {})
       vim.list_extend(ensure_installed, {
-        'tree-sitter-cli',
         'delve',
         'gomodifytags', -- Used by gopher.nvim for struct tag manipulation
         'impl', -- Used by gopher.nvim for interface implementation
