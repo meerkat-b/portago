@@ -39,4 +39,5 @@ docker-run:
 
 ## Remove build artifacts and ~/.portago runtime data
 clean:
+	@chmod -R u+w .staging/ 2>/dev/null || true
 	rm -rf dist/ bundle.tar.gz .staging/ $(HOME)/.portago

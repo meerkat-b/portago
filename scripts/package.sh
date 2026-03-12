@@ -3,10 +3,11 @@
 # package.sh — Build a fully self-contained portago bundle.
 #
 # This script:
-#   1. Runs portago setup into a staging directory
-#   2. Strips unnecessary files (.git dirs, clangd)
-#   3. Compresses everything into bundle.tar.gz
-#   4. Rebuilds the Go binary with the bundle embedded
+#   1. Builds a bootstrap binary (lightweight, no bundle)
+#   2. Runs setup to download nvim, plugins, Mason tools, and treesitter parsers
+#   3. Aggressively strips unneeded files (plugins, tools, runtime, metadata)
+#   4. Compresses everything into bundle.tar.gz
+#   5. Rebuilds the Go binary with the bundle embedded
 #
 # Prerequisites: go, nvim (or a previously built portago), git, internet
 #
@@ -40,14 +41,24 @@ HOME_DIR="$STAGING_DIR/home"
 mkdir -p "$HOME_DIR"
 
 # Keep Go module cache in the system location, not in the staging home
-HOME="$HOME_DIR" GOMODCACHE="${GOMODCACHE:-$(go env GOMODCACHE)}" "$STAGING_DIR/portago-bootstrap" --setup </dev/null || true
+if ! HOME="$HOME_DIR" GOMODCACHE="${GOMODCACHE:-$(go env GOMODCACHE)}" "$STAGING_DIR/portago-bootstrap" --setup </dev/null; then
+  echo "ERROR: Bootstrap setup failed (exit code $?). Check output above for details."
+  exit 1
+fi
 
 PORTAGO_HOME="$HOME_DIR/.portago"
 
-if [ ! -d "$PORTAGO_HOME/nvim/bin" ]; then
-  echo "ERROR: Setup did not produce a valid ~/.portago directory"
-  exit 1
-fi
+# Validate all critical outputs from setup
+for required_dir in \
+  "$PORTAGO_HOME/nvim/bin" \
+  "$PORTAGO_HOME/config" \
+  "$PORTAGO_HOME/data/config/lazy" \
+  "$PORTAGO_HOME/data/config/mason/bin"; do
+  if [ ! -d "$required_dir" ]; then
+    echo "ERROR: Setup did not produce expected directory: $required_dir"
+    exit 1
+  fi
+done
 
 # --- Step 3: Strip unnecessary files to reduce size ---
 echo "==> Stripping unnecessary files..."
@@ -88,7 +99,11 @@ rm -f "$PORTAGO_HOME/data/config/lazy/lazy.nvim/manifest"
 
 # Strip Go tool binaries (remove debug symbols and symbol tables)
 echo "==> Stripping Go tool binaries..."
-find "$PORTAGO_HOME/data/config/mason/packages" -type f -perm +111 | while read -r bin; do
+PERM_FLAG="-perm +111"
+if [[ "$OSTYPE" != "darwin"* ]]; then
+  PERM_FLAG="-perm /111"
+fi
+find "$PORTAGO_HOME/data/config/mason/packages" -type f $PERM_FLAG | while read -r bin; do
   if file "$bin" | grep -q "Mach-O\|ELF"; then
     strip "$bin" 2>/dev/null || true
   fi
@@ -151,23 +166,33 @@ fi
 # when extracted on a different machine.
 echo "==> Resolving symlinks to real files..."
 find "$PORTAGO_HOME" -type l | while read -r link; do
-  target="$(readlink -f "$link" 2>/dev/null || true)"
+  target="$(readlink -f "$link" 2>/dev/null)"
+  if [ -z "$target" ]; then
+    echo "  WARNING: Cannot resolve symlink, removing: $link"
+    rm -f "$link"
+    continue
+  fi
   if [ -f "$target" ]; then
-    rm "$link"
-    cp "$target" "$link"
+    rm "$link" && cp "$target" "$link"
   elif [ -d "$target" ]; then
-    rm "$link"
-    cp -R "$target" "$link"
+    rm "$link" && cp -R "$target" "$link"
+  else
+    echo "  WARNING: Dangling symlink, removing: $link -> $target"
+    rm -f "$link"
   fi
 done
 
 # Fix Mason wrapper scripts that have hardcoded staging paths.
 # Replace references to the staging PORTAGO_HOME with a placeholder
-# that will be resolved at runtime (~/.portago).
+# that will be resolved at runtime to the actual portagoHome path.
 echo "==> Fixing Mason wrapper scripts..."
 find "$PORTAGO_HOME/data/config/mason/bin" -type f | while read -r f; do
   if head -1 "$f" 2>/dev/null | grep -q "^#!"; then
-    sed -i '' "s|$PORTAGO_HOME|PORTAGO_HOME_PLACEHOLDER|g" "$f"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      sed -i '' "s|$PORTAGO_HOME|PORTAGO_HOME_PLACEHOLDER|g" "$f"
+    else
+      sed -i "s|$PORTAGO_HOME|PORTAGO_HOME_PLACEHOLDER|g" "$f"
+    fi
   fi
 done
 

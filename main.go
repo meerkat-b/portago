@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -49,9 +50,17 @@ func isBundled() bool {
 
 // bundleHash returns the first 12 hex characters of the SHA256 of the embedded bundle.
 // Used as a content-addressed cache key for the temp extraction directory.
+var (
+	bundleHashOnce sync.Once
+	bundleHashVal  string
+)
+
 func bundleHash() string {
-	h := sha256.Sum256(bundleData)
-	return hex.EncodeToString(h[:6])
+	bundleHashOnce.Do(func() {
+		h := sha256.Sum256(bundleData)
+		bundleHashVal = hex.EncodeToString(h[:6])
+	})
+	return bundleHashVal
 }
 
 func main() {
@@ -76,14 +85,13 @@ func main() {
 		return
 	}
 
-	portagoHome, err := portagoDir(*persist)
+	portagoHome, usingTempCache, err := portagoDir(*persist)
 	if err != nil {
 		fatal("cannot determine directories: %v", err)
 	}
 
 	// Mutable state (undo, shada, swap) lives inside portagoHome when using
 	// ~/.portago, or in a separate persistent dir when using the temp cache.
-	usingTempCache := strings.HasPrefix(portagoHome, os.TempDir())
 	stateDir := filepath.Join(portagoHome, "state")
 	if usingTempCache {
 		stateDir, err = persistentStateDir()
@@ -105,7 +113,7 @@ func main() {
 				fatal("%v", err)
 			}
 		} else {
-			if err := doSetupOnline(portagoHome, stampFile); err != nil {
+			if err := doSetupOnline(portagoHome, stateDir, stampFile); err != nil {
 				fatal("%v", err)
 			}
 		}
@@ -117,26 +125,26 @@ func main() {
 	launchNvim(portagoHome, stateDir, flag.Args())
 }
 
-// portagoDir returns the base directory for portago's extracted data.
-// Priority: --persist flag → existing ~/.portago → temp cache /tmp/portago-<hash>/
-// Once you run with --persist, ~/.portago is created and used on every subsequent run.
-func portagoDir(persist bool) (string, error) {
+// portagoDir returns the base directory for portago's extracted data and whether
+// it uses a temp cache. Priority: --persist flag or unbundled mode → ~/.portago;
+// bundled mode checks for existing ~/.portago/.setup-done, otherwise temp cache.
+func portagoDir(persist bool) (dir string, isTemp bool, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	persistDir := filepath.Join(home, ".portago")
 
 	if persist || !isBundled() {
-		return persistDir, nil
+		return persistDir, false, nil
 	}
 
 	// Check if ~/.portago exists from a previous --persist run
 	if _, err := os.Stat(filepath.Join(persistDir, ".setup-done")); err == nil {
-		return persistDir, nil
+		return persistDir, false, nil
 	}
 
-	return filepath.Join(os.TempDir(), "portago-"+bundleHash()), nil
+	return filepath.Join(os.TempDir(), "portago-"+bundleHash()), true, nil
 }
 
 // persistentStateDir returns a directory for mutable nvim state (undo, shada,
@@ -153,36 +161,59 @@ func persistentStateDir() (string, error) {
 func doClean() {
 	var dirs []string
 
-	if home, err := os.UserHomeDir(); err == nil {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "portago: warning: cannot determine home directory: %v\n", err)
+		fmt.Fprintf(os.Stderr, "portago: only cleaning temp directories\n")
+	} else {
 		dirs = append(dirs, filepath.Join(home, ".portago"))
 		dirs = append(dirs, filepath.Join(home, ".local", "state", "portago"))
 	}
 
-	// Temp cache directories: /tmp/portago-*
+	// Temp cache directories: /tmp/portago-<12-hex-char-hash>
 	if matches, err := filepath.Glob(filepath.Join(os.TempDir(), "portago-*")); err == nil {
-		dirs = append(dirs, matches...)
+		for _, m := range matches {
+			suffix := strings.TrimPrefix(filepath.Base(m), "portago-")
+			if len(suffix) == 12 && isHexString(suffix) {
+				dirs = append(dirs, m)
+			}
+		}
 	}
 
 	removed := 0
+	failed := 0
 	for _, d := range dirs {
 		if _, err := os.Stat(d); err == nil {
 			fmt.Printf("==> Removing %s\n", d)
 			if err := os.RemoveAll(d); err != nil {
 				fmt.Fprintf(os.Stderr, "    warning: %v\n", err)
+				failed++
+			} else {
+				removed++
 			}
-			removed++
 		}
 	}
 
-	if removed == 0 {
+	if removed == 0 && failed == 0 {
 		fmt.Println("==> Nothing to clean.")
+	} else if failed > 0 {
+		fmt.Fprintf(os.Stderr, "==> Clean finished with %d error(s).\n", failed)
 	} else {
 		fmt.Println("==> Clean complete.")
 	}
 }
 
+func isHexString(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
 // nvimBin returns the path to the nvim binary.
-// Prefers the bundled copy at ~/.portago/nvim/bin/nvim,
+// Prefers the bundled copy at <portagoHome>/nvim/bin/nvim,
 // falls back to system nvim via PATH lookup.
 func nvimBin(portagoHome string) (string, error) {
 	bundled := filepath.Join(portagoHome, "nvim", "bin", "nvim")
@@ -216,7 +247,9 @@ func doSetupBundled(portagoHome, stateDir, stampFile string) error {
 	}
 
 	// Fix Mason wrapper scripts that contain a placeholder path from packaging
-	fixMasonWrapperScripts(portagoHome)
+	if err := fixMasonWrapperScripts(portagoHome); err != nil {
+		return fmt.Errorf("fixing mason wrapper scripts: %w", err)
+	}
 
 	// Write stamp file
 	if err := os.WriteFile(stampFile, []byte(version+"\n"), 0o644); err != nil {
@@ -229,10 +262,10 @@ func doSetupBundled(portagoHome, stateDir, stampFile string) error {
 
 // ---------------------------------------------------------------------------
 // Online setup: download nvim + install plugins/tools via headless nvim.
-// This is the fallback when the binary was built without a bundle.
+// Used when the binary was built without a bundle (e.g., via make build-online).
 // ---------------------------------------------------------------------------
 
-func doSetupOnline(portagoHome, stampFile string) error {
+func doSetupOnline(portagoHome, stateDir, stampFile string) error {
 	// Download Neovim if not already present
 	if err := downloadNvim(portagoHome); err != nil {
 		return fmt.Errorf("downloading nvim: %w", err)
@@ -252,7 +285,6 @@ func doSetupOnline(portagoHome, stampFile string) error {
 		return fmt.Errorf("extracting config: %w", err)
 	}
 
-	stateDir := filepath.Join(portagoHome, "state")
 	env := buildEnv(portagoHome, stateDir)
 
 	// Install plugins
@@ -277,11 +309,16 @@ func doSetupOnline(portagoHome, stampFile string) error {
 	// Wait for tree-sitter-cli to be available
 	tsCLI := filepath.Join(portagoHome, "data", "config", "mason", "bin", "tree-sitter")
 	fmt.Println("==> Waiting for tree-sitter-cli...")
+	tsFound := false
 	for i := 0; i < 30; i++ {
 		if info, err := os.Stat(tsCLI); err == nil && info.Mode()&0o111 != 0 {
+			tsFound = true
 			break
 		}
 		time.Sleep(time.Second)
+	}
+	if !tsFound {
+		return fmt.Errorf("tree-sitter-cli not found at %s after 30s; Mason installation may have failed", tsCLI)
 	}
 
 	// Install TreeSitter parsers
@@ -339,7 +376,8 @@ func downloadNvim(portagoHome string) error {
 
 	fmt.Printf("==> Downloading Neovim v%s for %s/%s...\n", nvimVersion, runtime.GOOS, runtime.GOARCH)
 
-	resp, err := http.Get(url)
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Get(url)
 	if err != nil {
 		return fmt.Errorf("downloading nvim: %w", err)
 	}
@@ -362,7 +400,9 @@ func downloadNvim(portagoHome string) error {
 	fmt.Println("==> Checksum verified.")
 
 	nvimDir := filepath.Join(portagoHome, "nvim")
-	os.RemoveAll(nvimDir)
+	if err := os.RemoveAll(nvimDir); err != nil {
+		return fmt.Errorf("removing old nvim directory %s: %w", nvimDir, err)
+	}
 
 	fmt.Println("==> Extracting Neovim...")
 	if err := extractTarGzStripTopLevel(body, nvimDir); err != nil {
@@ -397,7 +437,7 @@ func extractTarGzToDir(data []byte, destDir string) error {
 
 		target := filepath.Join(destDir, header.Name)
 
-		if err := extractTarEntry(tr, header, target); err != nil {
+		if err := extractTarEntry(tr, header, target, destDir); err != nil {
 			return err
 		}
 	}
@@ -430,14 +470,28 @@ func extractTarGzStripTopLevel(data []byte, destDir string) error {
 		}
 		target := filepath.Join(destDir, parts[1])
 
-		if err := extractTarEntry(tr, header, target); err != nil {
+		if err := extractTarEntry(tr, header, target, destDir); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func extractTarEntry(tr *tar.Reader, header *tar.Header, target string) error {
+// validatePathWithinDir ensures target stays within destDir (Zip Slip protection).
+func validatePathWithinDir(target, destDir string) error {
+	cleanTarget := filepath.Clean(target)
+	cleanDest := filepath.Clean(destDir)
+	if cleanTarget != cleanDest && !strings.HasPrefix(cleanTarget, cleanDest+string(os.PathSeparator)) {
+		return fmt.Errorf("tar entry escapes destination directory: %s", cleanTarget)
+	}
+	return nil
+}
+
+func extractTarEntry(tr *tar.Reader, header *tar.Header, target, destDir string) error {
+	if err := validatePathWithinDir(target, destDir); err != nil {
+		return err
+	}
+
 	switch header.Typeflag {
 	case tar.TypeDir:
 		return os.MkdirAll(target, 0o755)
@@ -455,28 +509,46 @@ func extractTarEntry(tr *tar.Reader, header *tar.Header, target string) error {
 		}
 		return f.Close()
 	case tar.TypeSymlink:
+		// Validate symlink target stays within destDir
+		if filepath.IsAbs(header.Linkname) {
+			return fmt.Errorf("tar symlink %q has absolute target %q", header.Name, header.Linkname)
+		}
+		resolved := filepath.Join(filepath.Dir(target), header.Linkname)
+		if err := validatePathWithinDir(resolved, destDir); err != nil {
+			return fmt.Errorf("tar symlink %q -> %q: %w", header.Name, header.Linkname, err)
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		os.Remove(target)
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing existing file before symlink %s: %w", target, err)
+		}
 		return os.Symlink(header.Linkname, target)
+	default:
+		fmt.Fprintf(os.Stderr, "portago: warning: skipping unsupported tar entry type %d for %s\n", header.Typeflag, header.Name)
 	}
 	return nil
 }
 
 // ---------------------------------------------------------------------------
-// Config extraction (online mode — extracts from go:embed)
+// Config extraction (online mode — extracts config/ from the go:embed configFS,
+// not from the bundle tarball)
 // ---------------------------------------------------------------------------
 
 func extractConfig(destDir string) error {
-	os.RemoveAll(destDir)
+	if err := os.RemoveAll(destDir); err != nil {
+		return fmt.Errorf("removing old config directory %s: %w", destDir, err)
+	}
 
 	return fs.WalkDir(configFS, "config", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		relPath, _ := filepath.Rel("config", path)
+		relPath, err := filepath.Rel("config", path)
+		if err != nil {
+			return fmt.Errorf("computing relative path for %s: %w", path, err)
+		}
 		target := filepath.Join(destDir, relPath)
 
 		if d.IsDir() {
@@ -493,11 +565,14 @@ func extractConfig(destDir string) error {
 
 // fixMasonWrapperScripts replaces the packaging placeholder in Mason wrapper
 // scripts with the actual portagoHome path on this machine.
-func fixMasonWrapperScripts(portagoHome string) {
+func fixMasonWrapperScripts(portagoHome string) error {
 	masonBin := filepath.Join(portagoHome, "data", "config", "mason", "bin")
 	entries, err := os.ReadDir(masonBin)
 	if err != nil {
-		return
+		if os.IsNotExist(err) {
+			return nil // No mason bin dir is acceptable
+		}
+		return fmt.Errorf("reading mason bin dir %s: %w", masonBin, err)
 	}
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -506,13 +581,16 @@ func fixMasonWrapperScripts(portagoHome string) {
 		path := filepath.Join(masonBin, entry.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
-			continue
+			return fmt.Errorf("reading mason wrapper %s: %w", path, err)
 		}
 		if bytes.Contains(data, []byte("PORTAGO_HOME_PLACEHOLDER")) {
 			fixed := bytes.ReplaceAll(data, []byte("PORTAGO_HOME_PLACEHOLDER"), []byte(portagoHome))
-			os.WriteFile(path, fixed, 0o755)
+			if err := os.WriteFile(path, fixed, 0o755); err != nil {
+				return fmt.Errorf("writing fixed mason wrapper %s: %w", path, err)
+			}
 		}
 	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
