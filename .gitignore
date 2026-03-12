@@ -2,3 +2,6 @@
 data/
 state/
 cache/
+
+# Build artifacts
+dist/
