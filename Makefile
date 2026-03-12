@@ -1,4 +1,4 @@
-.PHONY: build install setup run docker-build docker-run clean clean-home
+.PHONY: build install setup run docker-build docker-run clean
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -27,10 +27,6 @@ docker-build:
 docker-run:
 	docker run -it --rm -v "$$(pwd):/work" portago
 
-## Remove build artifacts
+## Remove build artifacts and ~/.portago runtime data
 clean:
-	rm -rf dist/
-
-## Remove ~/.portago (reset to fresh first-run state)
-clean-home:
-	rm -rf $(HOME)/.portago
+	rm -rf dist/ $(HOME)/.portago

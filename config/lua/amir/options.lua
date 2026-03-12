@@ -9,6 +9,16 @@ vim.api.nvim_create_autocmd('VimEnter', {
   callback = function() vim.cmd 'windo set wrap' end,
 })
 
+-- Auto-set working directory to project root so that debugging,
+-- test running, and file navigation work from any launch directory.
+vim.api.nvim_create_autocmd('BufEnter', {
+  pattern = '*.go',
+  callback = function()
+    local root = vim.fs.root(0, { 'go.mod', '.git' })
+    if root then vim.cmd.cd(root) end
+  end,
+})
+
 vim.keymap.set('n', '<leader>x', '<cmd>close<CR>', { desc = 'Close current window' })
 vim.keymap.set('n', '<leader>rgt', ':terminal go test ./...<CR>', { desc = 'Run Go tests' })
 vim.keymap.set('n', '<leader>rgr', ':terminal go run .<CR>', { desc = 'Run Go' })
