@@ -93,6 +93,10 @@ vim.g.maplocalleader = ' '
 -- Set to true if you have a Nerd Font installed and selected in the terminal
 vim.g.have_nerd_font = true
 
+-- Disable netrw (required for nvim-tree)
+vim.g.loaded_netrw = 1
+vim.g.loaded_netrwPlugin = 1
+
 -- [[ Setting options ]]
 -- See `:help vim.o`
 -- NOTE: You can change these options as you wish!
@@ -317,6 +321,7 @@ require('lazy').setup({
         { '<leader>r', group = '[R]un/Test' },
         { '<leader>rg', group = '[G]olang' },
         { '<leader>h', group = 'Git [H]unk', mode = { 'n', 'v' } },
+        { '<leader>t', group = '[T]rouble' },
       },
     },
   },
@@ -621,7 +626,8 @@ require('lazy').setup({
         'stylua', -- Used to format Lua code
         'tree-sitter-cli',
         'delve',
-        -- You can add other tools here that you want Mason to install
+        'gomodifytags', -- Used by gopher.nvim for struct tag manipulation
+        'impl', -- Used by gopher.nvim for interface implementation
       })
 
       require('mason-tool-installer').setup { ensure_installed = ensure_installed }
@@ -848,6 +854,50 @@ require('lazy').setup({
       -- ... and there is more!
       --  Check out: https://github.com/nvim-mini/mini.nvim
     end,
+  },
+
+  { -- File explorer sidebar
+    'nvim-tree/nvim-tree.lua',
+    dependencies = { 'nvim-tree/nvim-web-devicons' },
+    keys = {
+      { '<leader>e', '<cmd>NvimTreeToggle<CR>', desc = 'Toggle file [E]xplorer' },
+      { '<leader>E', '<cmd>NvimTreeFindFile<CR>', desc = 'Find current file in [E]xplorer' },
+    },
+    opts = {
+      filters = { dotfiles = false },
+      view = { width = 35 },
+      renderer = {
+        group_empty = true,
+        icons = { show = { git = true, folder = true, file = true, folder_arrow = true } },
+      },
+      git = { enable = true, ignore = false },
+    },
+  },
+
+  { -- Better diagnostics list
+    'folke/trouble.nvim',
+    dependencies = { 'nvim-tree/nvim-web-devicons' },
+    cmd = 'Trouble',
+    keys = {
+      { '<leader>td', '<cmd>Trouble diagnostics toggle<CR>', desc = '[T]rouble [D]iagnostics' },
+      { '<leader>tb', '<cmd>Trouble diagnostics toggle filter.buf=0<CR>', desc = '[T]rouble [B]uffer diagnostics' },
+      { '<leader>ts', '<cmd>Trouble symbols toggle<CR>', desc = '[T]rouble [S]ymbols' },
+      { '<leader>tq', '<cmd>Trouble qflist toggle<CR>', desc = '[T]rouble [Q]uickfix' },
+    },
+    opts = {},
+  },
+
+  { -- Go utilities: struct tags, interface impl, error handling
+    'olexsmir/gopher.nvim',
+    ft = 'go',
+    dependencies = { 'nvim-treesitter/nvim-treesitter' },
+    opts = {},
+    keys = {
+      { '<leader>gga', '<cmd>GoTagAdd json<CR>', desc = '[G]o: Add json struct tags' },
+      { '<leader>ggr', '<cmd>GoTagRm json<CR>', desc = '[G]o: Remove json struct tags' },
+      { '<leader>ggi', '<cmd>GoIfErr<CR>', desc = '[G]o: Add if err != nil' },
+      { '<leader>gge', vim.lsp.buf.code_action, desc = '[G]o: Code action (implement interface, etc.)' },
+    },
   },
 
   { -- Highlight, edit, and navigate code
