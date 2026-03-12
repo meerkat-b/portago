@@ -1,4 +1,4 @@
-.PHONY: build build-online package package-flatpack-all install setup run test-platforms clean
+.PHONY: build package-flatpack package package-flatpack-all install setup run test-platforms clean
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -6,8 +6,8 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 build: bundle.tar.gz
 	go build -ldflags "-s -w -X main.version=$(VERSION)" -o dist/portago .
 
-## Build the lightweight binary (downloads dependencies on first run)
-build-online:
+## Build the lightweight flatpack binary (downloads dependencies on first run)
+package-flatpack:
 	@tar czf bundle.tar.gz --files-from /dev/null
 	go build -ldflags "-s -w -X main.version=$(VERSION)" -o dist/portago-flatpack .
 

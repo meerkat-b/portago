@@ -274,7 +274,7 @@ func doSetupBundled(portagoHome, stateDir, stampFile string) error {
 
 // ---------------------------------------------------------------------------
 // Online setup: download nvim + install plugins/tools via headless nvim.
-// Used when the binary was built without a bundle (e.g., via make build-online).
+// Used when the binary was built without a bundle (e.g., via make package-flatpack).
 // ---------------------------------------------------------------------------
 
 func doSetupOnline(portagoHome, stateDir, stampFile string) error {

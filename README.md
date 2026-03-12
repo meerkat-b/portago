@@ -35,7 +35,7 @@ Portago embeds a full Neovim configuration, plugins, LSP servers, debugger, and 
 
 ```bash
 # macOS (Apple Silicon)
-curl -Lo portago https://github.com/YOUR_USER/portago/releases/latest/download/portago-darwin-arm64
+curl -Lo portago https://github.com/meerkat-b/portago/releases/latest/download/portago-darwin-arm64
 chmod +x portago
 ./portago myproject/
 ```
@@ -43,11 +43,11 @@ chmod +x portago
 ### Build from source
 
 ```bash
-git clone https://github.com/YOUR_USER/portago.git
+git clone https://github.com/meerkat-b/portago.git
 cd portago
 
 # Option 1: Build the flatpack (lightweight, downloads deps on first run)
-make build-online
+make package-flatpack
 ./dist/portago-flatpack
 
 # Option 2: Build the fully bundled binary (needs internet, takes several minutes)
