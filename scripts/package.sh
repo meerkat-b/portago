@@ -99,14 +99,20 @@ echo "==> Pruning nvim runtime to Go-relevant languages..."
 NVIM_RUNTIME="$PORTAGO_HOME/nvim/share/nvim/runtime"
 KEEP_LANGS="go lua vim markdown sh bash zsh yaml json toml diff help"
 
+# Core nvim runtime files that must not be removed (syntax engine bootstrap, etc.)
+CORE_FILES="syntax synload syncolor nosyntax manual"
+
 for dir in syntax ftplugin indent compiler; do
   if [ -d "$NVIM_RUNTIME/$dir" ]; then
-    # Build a find expression that excludes the files we want to keep
+    # Build a find expression that excludes files we want to keep
     FIND_EXCLUDE=""
     for lang in $KEEP_LANGS; do
       FIND_EXCLUDE="$FIND_EXCLUDE -not -name ${lang}.vim -not -name ${lang}.lua"
     done
-    # Keep files that don't match any language we want
+    for core in $CORE_FILES; do
+      FIND_EXCLUDE="$FIND_EXCLUDE -not -name ${core}.vim -not -name ${core}.lua"
+    done
+    # Delete files that don't match any kept language or core file
     find "$NVIM_RUNTIME/$dir" -maxdepth 1 -type f $FIND_EXCLUDE -delete 2>/dev/null || true
     # Remove subdirectories for languages we don't need (some ftplugins have subdirs)
     find "$NVIM_RUNTIME/$dir" -mindepth 1 -maxdepth 1 -type d | while read -r subdir; do
@@ -114,6 +120,9 @@ for dir in syntax ftplugin indent compiler; do
       keep=false
       for lang in $KEEP_LANGS; do
         if [ "$dirname" = "$lang" ]; then keep=true; break; fi
+      done
+      for core in $CORE_FILES; do
+        if [ "$dirname" = "$core" ]; then keep=true; break; fi
       done
       if [ "$keep" = false ]; then rm -rf "$subdir"; fi
     done
