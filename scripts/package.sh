@@ -59,6 +59,10 @@ find "$PORTAGO_HOME/data/config/lazy" -name ".git" -type d -exec rm -rf {} + 2>/
 rm -rf "$PORTAGO_HOME/data/config/mason/packages/clangd"
 rm -f "$PORTAGO_HOME/data/config/mason/bin/clangd"
 
+# Remove tree-sitter-cli (18MB — only needed to compile parsers, which are pre-compiled in the bundle)
+rm -rf "$PORTAGO_HOME/data/config/mason/packages/tree-sitter-cli"
+rm -f "$PORTAGO_HOME/data/config/mason/bin/tree-sitter"
+
 # Resolve symlinks to real files throughout the data directory.
 # nvim-treesitter and other plugins create symlinks that will break
 # when extracted on a different machine.

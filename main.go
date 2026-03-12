@@ -279,7 +279,7 @@ func doSetupOnline(portagoHome, stampFile string) error {
 
 	// Install TreeSitter parsers
 	fmt.Println("==> Installing TreeSitter parsers...")
-	tsCmd := "lua require('nvim-treesitter').install({'bash','c','diff','go','html','lua','luadoc','markdown','markdown_inline','query','vim','vimdoc'})"
+	tsCmd := "lua require('nvim-treesitter').install({'bash','diff','go','lua','luadoc','markdown','markdown_inline','query','vim','vimdoc'})"
 	if err := runNvimHeadless(portagoHome, env, "+"+tsCmd, "+qa"); err != nil {
 		return fmt.Errorf("installing treesitter parsers: %w", err)
 	}
