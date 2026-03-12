@@ -46,11 +46,11 @@ chmod +x portago
 git clone https://github.com/meerkat-b/portago.git
 cd portago
 
-# Option 1: Build the flatpack (lightweight, downloads deps on first run)
+# Option 1: Build the flatpack (lightweight, downloads dependencies on first run)
 make package-flatpack
 ./dist/portago-flatpack
 
-# Option 2: Build the fully bundled binary (needs internet, takes several minutes)
+# Option 2: Build the fully bundled binary (fully self-contained, extracts self on first run)
 make package
 ./dist/portago
 ```
