@@ -24,11 +24,14 @@ import (
 //go:embed all:config
 var configFS embed.FS
 
+//go:embed bundle.tar.gz
+var bundleData []byte
+
 var version = "dev"
 
 const nvimVersion = "0.11.1"
 
-// SHA256 checksums for official Neovim v0.11.1 releases.
+// SHA256 checksums for official Neovim v0.11.1 releases (used in unbundled mode).
 var nvimChecksums = map[string]string{
 	"darwin-arm64": "89a766fb41303dc101766898ad3c4eb6db556e19965582cc164419605a1d1f61",
 	"darwin-amd64": "485d20138bb4b41206dbcf23a2069ad9560c83e9313fb8073cb3dde5560782e3",
@@ -36,14 +39,27 @@ var nvimChecksums = map[string]string{
 	"linux-amd64":  "92ecb2dbdfbd0c6d79b522e07c879f7743c5d395d0a4f13b0d4f668f8565527a",
 }
 
+// isBundled returns true if the embedded bundle contains actual data
+// (i.e., this binary was built with a full bundle via scripts/package.sh).
+func isBundled() bool {
+	// An empty tar.gz created by `tar czf ... --files-from /dev/null` is ~20 bytes.
+	// A real bundle will be many megabytes.
+	return len(bundleData) > 1024
+}
+
 func main() {
-	setup := flag.Bool("setup", false, "Force re-extract config and re-run setup")
+	setup := flag.Bool("setup", false, "Force re-extract and re-run setup")
 	clean := flag.Bool("clean", false, "Remove ~/.portago and exit (fresh start)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("portago %s\n", version)
+		if isBundled() {
+			fmt.Println("  (fully bundled)")
+		} else {
+			fmt.Println("  (downloads dependencies on first run)")
+		}
 		return
 	}
 
@@ -69,8 +85,17 @@ func main() {
 	}
 
 	if needsSetup {
-		if err := doSetup(portagoHome, stampFile); err != nil {
-			fatal("%v", err)
+		if isBundled() {
+			if err := doSetupBundled(portagoHome, stampFile); err != nil {
+				fatal("%v", err)
+			}
+		} else {
+			if err := doSetupOnline(portagoHome, stampFile); err != nil {
+				fatal("%v", err)
+			}
+		}
+		if *setup {
+			return
 		}
 	}
 
@@ -99,7 +124,44 @@ func nvimBin(portagoHome string) (string, error) {
 	return "", fmt.Errorf("nvim not found: no bundled nvim at %s and no system nvim in PATH", bundled)
 }
 
-func doSetup(portagoHome, stampFile string) error {
+// ---------------------------------------------------------------------------
+// Bundled setup: extract the embedded tar.gz containing nvim, config,
+// plugins, Mason tools, and TreeSitter parsers. No internet needed.
+// ---------------------------------------------------------------------------
+
+func doSetupBundled(portagoHome, stampFile string) error {
+	fmt.Println("==> Extracting bundled portago (fully offline)...")
+
+	// Create base directories
+	for _, sub := range []string{"state", "cache"} {
+		if err := os.MkdirAll(filepath.Join(portagoHome, sub), 0o755); err != nil {
+			return fmt.Errorf("creating %s: %w", sub, err)
+		}
+	}
+
+	// Extract the full bundle (nvim/, config/, data/) into portagoHome
+	if err := extractTarGzToDir(bundleData, portagoHome); err != nil {
+		return fmt.Errorf("extracting bundle: %w", err)
+	}
+
+	// Fix Mason wrapper scripts that contain a placeholder path from packaging
+	fixMasonWrapperScripts(portagoHome)
+
+	// Write stamp file
+	if err := os.WriteFile(stampFile, []byte(version+"\n"), 0o644); err != nil {
+		return fmt.Errorf("writing stamp file: %w", err)
+	}
+
+	fmt.Println("==> Setup complete! (no downloads needed)")
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Online setup: download nvim + install plugins/tools via headless nvim.
+// This is the fallback when the binary was built without a bundle.
+// ---------------------------------------------------------------------------
+
+func doSetupOnline(portagoHome, stampFile string) error {
 	// Download Neovim if not already present
 	if err := downloadNvim(portagoHome); err != nil {
 		return fmt.Errorf("downloading nvim: %w", err)
@@ -159,8 +221,10 @@ func doSetup(portagoHome, stampFile string) error {
 	return nil
 }
 
-// nvimDownloadURL returns the download URL and expected checksum for the
-// Neovim release matching the current OS and architecture.
+// ---------------------------------------------------------------------------
+// Neovim download (online mode only)
+// ---------------------------------------------------------------------------
+
 func nvimDownloadURL() (url, checksum string, err error) {
 	key := runtime.GOOS + "-" + runtime.GOARCH
 	checksum, ok := nvimChecksums[key]
@@ -168,7 +232,6 @@ func nvimDownloadURL() (url, checksum string, err error) {
 		return "", "", fmt.Errorf("unsupported platform: %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
-	// Map Go naming to Neovim release naming
 	osName := runtime.GOOS
 	archName := runtime.GOARCH
 	if osName == "darwin" {
@@ -183,9 +246,7 @@ func nvimDownloadURL() (url, checksum string, err error) {
 	return url, checksum, nil
 }
 
-// downloadNvim downloads and extracts the Neovim release into portagoHome/nvim/.
 func downloadNvim(portagoHome string) error {
-	// Skip if already downloaded
 	nvimBinary := filepath.Join(portagoHome, "nvim", "bin", "nvim")
 	if _, err := os.Stat(nvimBinary); err == nil {
 		fmt.Println("==> Neovim already present, skipping download.")
@@ -209,13 +270,11 @@ func downloadNvim(portagoHome string) error {
 		return fmt.Errorf("downloading nvim: HTTP %d from %s", resp.StatusCode, url)
 	}
 
-	// Read entire body for checksum verification before extracting (~15MB)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("reading nvim download: %w", err)
 	}
 
-	// Verify checksum
 	hash := sha256.Sum256(body)
 	got := hex.EncodeToString(hash[:])
 	if got != expectedChecksum {
@@ -223,22 +282,24 @@ func downloadNvim(portagoHome string) error {
 	}
 	fmt.Println("==> Checksum verified.")
 
-	// Remove any partial previous extraction
 	nvimDir := filepath.Join(portagoHome, "nvim")
 	os.RemoveAll(nvimDir)
 
-	// Extract tarball
 	fmt.Println("==> Extracting Neovim...")
-	if err := extractTarGz(body, portagoHome); err != nil {
+	if err := extractTarGzStripTopLevel(body, nvimDir); err != nil {
 		return fmt.Errorf("extracting nvim: %w", err)
 	}
 
 	return nil
 }
 
-// extractTarGz extracts a gzipped tarball, stripping the top-level directory
-// and placing contents under destDir/nvim/.
-func extractTarGz(data []byte, destDir string) error {
+// ---------------------------------------------------------------------------
+// Tar/Gzip extraction helpers
+// ---------------------------------------------------------------------------
+
+// extractTarGzToDir extracts a gzipped tarball directly into destDir,
+// preserving the paths as-is (no stripping).
+func extractTarGzToDir(data []byte, destDir string) error {
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return err
@@ -246,8 +307,6 @@ func extractTarGz(data []byte, destDir string) error {
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
-	nvimDir := filepath.Join(destDir, "nvim")
-
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -257,48 +316,80 @@ func extractTarGz(data []byte, destDir string) error {
 			return err
 		}
 
-		// Strip the top-level directory (e.g., "nvim-macos-arm64/")
-		// so "nvim-macos-arm64/bin/nvim" becomes "nvim/bin/nvim"
-		parts := strings.SplitN(header.Name, "/", 2)
-		if len(parts) < 2 || parts[1] == "" {
-			continue
-		}
-		relPath := parts[1]
-		target := filepath.Join(nvimDir, relPath)
+		target := filepath.Join(destDir, header.Name)
 
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
-				return err
-			}
-			f.Close()
-		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			os.Remove(target)
-			if err := os.Symlink(header.Linkname, target); err != nil {
-				return err
-			}
+		if err := extractTarEntry(tr, header, target); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
+// extractTarGzStripTopLevel extracts a gzipped tarball, stripping the
+// top-level directory, placing contents directly under destDir.
+func extractTarGzStripTopLevel(data []byte, destDir string) error {
+	gz, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		// Strip the top-level directory (e.g., "nvim-macos-arm64/bin/nvim" -> "bin/nvim")
+		parts := strings.SplitN(header.Name, "/", 2)
+		if len(parts) < 2 || parts[1] == "" {
+			continue
+		}
+		target := filepath.Join(destDir, parts[1])
+
+		if err := extractTarEntry(tr, header, target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func extractTarEntry(tr *tar.Reader, header *tar.Header, target string) error {
+	switch header.Typeflag {
+	case tar.TypeDir:
+		return os.MkdirAll(target, 0o755)
+	case tar.TypeReg:
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(f, tr); err != nil {
+			f.Close()
+			return err
+		}
+		return f.Close()
+	case tar.TypeSymlink:
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		os.Remove(target)
+		return os.Symlink(header.Linkname, target)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Config extraction (online mode — extracts from go:embed)
+// ---------------------------------------------------------------------------
+
 func extractConfig(destDir string) error {
-	// Remove old config to ensure clean state
 	os.RemoveAll(destDir)
 
 	return fs.WalkDir(configFS, "config", func(path string, d fs.DirEntry, err error) error {
@@ -306,7 +397,6 @@ func extractConfig(destDir string) error {
 			return err
 		}
 
-		// Strip the "config" prefix from the embedded path
 		relPath, _ := filepath.Rel("config", path)
 		target := filepath.Join(destDir, relPath)
 
@@ -321,6 +411,34 @@ func extractConfig(destDir string) error {
 		return os.WriteFile(target, data, 0o644)
 	})
 }
+
+// fixMasonWrapperScripts replaces the packaging placeholder in Mason wrapper
+// scripts with the actual portagoHome path on this machine.
+func fixMasonWrapperScripts(portagoHome string) {
+	masonBin := filepath.Join(portagoHome, "data", "config", "mason", "bin")
+	entries, err := os.ReadDir(masonBin)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(masonBin, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if bytes.Contains(data, []byte("PORTAGO_HOME_PLACEHOLDER")) {
+			fixed := bytes.ReplaceAll(data, []byte("PORTAGO_HOME_PLACEHOLDER"), []byte(portagoHome))
+			os.WriteFile(path, fixed, 0o755)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Nvim execution
+// ---------------------------------------------------------------------------
 
 func runNvimHeadless(portagoHome string, env []string, args ...string) error {
 	nvimPath, err := nvimBin(portagoHome)

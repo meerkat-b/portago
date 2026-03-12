@@ -5,3 +5,5 @@ cache/
 
 # Build artifacts
 dist/
+bundle.tar.gz
+.staging/

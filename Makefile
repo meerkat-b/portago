@@ -1,10 +1,20 @@
-.PHONY: build install setup run docker-build docker-run clean
+.PHONY: build build-online package install setup run docker-build docker-run clean
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
-## Build the portago binary
-build:
+## Build the fully bundled binary (requires running 'make package' first)
+build: bundle.tar.gz
+	go build -ldflags "-s -w -X main.version=$(VERSION)" -o dist/portago .
+
+## Build the lightweight binary (downloads dependencies on first run)
+build-online:
+	@tar czf bundle.tar.gz --files-from /dev/null
 	go build -ldflags "-X main.version=$(VERSION)" -o dist/portago .
+
+## Create the bundle (runs full setup, strips, compresses) then builds the final binary
+package:
+	@chmod +x scripts/package.sh
+	VERSION=$(VERSION) scripts/package.sh
 
 ## Install to GOPATH/bin
 install:
@@ -29,4 +39,4 @@ docker-run:
 
 ## Remove build artifacts and ~/.portago runtime data
 clean:
-	rm -rf dist/ $(HOME)/.portago
+	rm -rf dist/ bundle.tar.gz .staging/ $(HOME)/.portago

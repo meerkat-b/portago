@@ -597,7 +597,6 @@ require('lazy').setup({
       --  Feel free to add/remove any LSPs that you want here. They will automatically be installed.
       --  See `:help lsp-config` for information about keys and how to configure
       local servers = {
-        clangd = {},
         gopls = {},
         -- pyright = {},
         -- rust_analyzer = {},
@@ -676,20 +675,10 @@ require('lazy').setup({
     },
     opts = {
       notify_on_error = false,
-      format_on_save = function(bufnr)
-        -- Disable "format_on_save lsp_fallback" for languages that don't
-        -- have a well standardized coding style. You can add additional
-        -- languages here or re-enable it for the disabled ones.
-        local disable_filetypes = { c = true, cpp = true }
-        if disable_filetypes[vim.bo[bufnr].filetype] then
-          return nil
-        else
-          return {
-            timeout_ms = 500,
-            lsp_format = 'fallback',
-          }
-        end
-      end,
+      format_on_save = {
+        timeout_ms = 500,
+        lsp_format = 'fallback',
+      },
       formatters_by_ft = {
         lua = { 'stylua' },
         -- Conform can also run multiple formatters sequentially
@@ -893,8 +882,13 @@ require('lazy').setup({
       require('nvim-treesitter').install(filetypes)
       vim.api.nvim_create_autocmd('FileType', {
         pattern = filetypes,
-        callback = function() vim.treesitter.start() end,
+        callback = function(args) vim.treesitter.start(args.buf, args.match) end,
       })
+      -- Enable for the current buffer if its filetype is already set
+      local ft = vim.bo.filetype
+      if vim.tbl_contains(filetypes, ft) then
+        vim.treesitter.start(0, ft)
+      end
     end,
   },
 
