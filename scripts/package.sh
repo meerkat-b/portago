@@ -9,24 +9,33 @@
 #   4. Compresses everything into bundle.tar.gz
 #   5. Rebuilds the Go binary with the bundle embedded
 #
-# Prerequisites: go, nvim (or a previously built portago), git, internet
+# Prerequisites: go, git, internet
 #
 set -euo pipefail
 
 # Portable readlink -f (macOS BSD readlink doesn't support -f)
 resolve_path() {
-  if readlink -f "$1" 2>/dev/null; then return; fi
-  # Fallback: Python (ships with Xcode CLI tools on macOS)
-  if python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1" 2>/dev/null; then return; fi
-  # Last resort: manual symlink resolution
-  local target="$1"
-  local dir
-  while [ -L "$target" ]; do
-    dir="$(cd -P "$(dirname "$target")" && pwd)"
-    target="$(readlink "$target")"
-    [[ "$target" != /* ]] && target="$dir/$target"
-  done
-  cd -P "$(dirname "$target")" && echo "$(pwd)/$(basename "$target")"
+  (
+    local result
+    if result=$(readlink -f "$1" 2>/dev/null) && [ -n "$result" ]; then
+      echo "$result"
+      return
+    fi
+    # Fallback: Python 3 (available if Xcode CLI tools are installed on macOS)
+    if result=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1" 2>/dev/null) && [ -n "$result" ]; then
+      echo "$result"
+      return
+    fi
+    # Last resort: manual symlink resolution
+    local target="$1"
+    local dir
+    while [ -L "$target" ]; do
+      dir="$(cd -P "$(dirname "$target")" && pwd)" || return 1
+      target="$(readlink "$target")" || return 1
+      [[ "$target" != /* ]] && target="$dir/$target"
+    done
+    cd -P "$(dirname "$target")" && echo "$(pwd)/$(basename "$target")"
+  )
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,7 +43,13 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 STAGING_DIR="$PROJECT_DIR/.staging"
 BUNDLE_FILE="$PROJECT_DIR/bundle.tar.gz"
 
-VERSION="${VERSION:-$(cd "$PROJECT_DIR" && git describe --tags --always --dirty 2>/dev/null || echo "dev")}"
+if [ -z "${VERSION:-}" ]; then
+  VERSION="$(cd "$PROJECT_DIR" && git describe --tags --always --dirty 2>/dev/null)" || true
+  if [ -z "$VERSION" ]; then
+    echo "ERROR: git describe failed and VERSION not set. Set VERSION explicitly or ensure a git tag exists." >&2
+    exit 1
+  fi
+fi
 
 echo "==> Packaging portago $VERSION for $(uname -s)/$(uname -m)"
 
@@ -90,19 +105,15 @@ find "$PORTAGO_HOME/data/config/lazy" -name ".git" -type d -exec rm -rf {} + 2>/
 # Remove plugin test/doc/spec directories (not needed at runtime)
 find "$PORTAGO_HOME/data/config/lazy" -type d \( -name "test" -o -name "tests" -o -name "spec" -o -name "doc" \) -exec rm -rf {} + 2>/dev/null || true
 
-# Remove clangd (164MB — this is a Go IDE)
+# Defensively remove tools that Mason or its dependencies may install
+# opportunistically, even though they are not in our ensure_installed list.
+# tree-sitter-cli is installed explicitly for parser compilation but not needed at runtime.
 rm -rf "$PORTAGO_HOME/data/config/mason/packages/clangd"
 rm -f "$PORTAGO_HOME/data/config/mason/bin/clangd"
-
-# Remove tree-sitter-cli (18MB — only needed to compile parsers, which are pre-compiled in the bundle)
 rm -rf "$PORTAGO_HOME/data/config/mason/packages/tree-sitter-cli"
 rm -f "$PORTAGO_HOME/data/config/mason/bin/tree-sitter"
-
-# Remove lua-language-server (20MB — not needed for a Go IDE)
 rm -rf "$PORTAGO_HOME/data/config/mason/packages/lua-language-server"
 rm -f "$PORTAGO_HOME/data/config/mason/bin/lua-language-server"
-
-# Remove stylua (7.7MB — Lua formatter, not needed for Go)
 rm -rf "$PORTAGO_HOME/data/config/mason/packages/stylua"
 rm -f "$PORTAGO_HOME/data/config/mason/bin/stylua"
 
@@ -186,22 +197,22 @@ fi
 # nvim-treesitter and other plugins create symlinks that will break
 # when extracted on a different machine.
 echo "==> Resolving symlinks to real files..."
-find "$PORTAGO_HOME" -type l | while read -r link; do
-  target="$(resolve_path "$link")"
+while IFS= read -r link; do
+  target="$(resolve_path "$link")" || true
   if [ -z "$target" ]; then
     echo "  WARNING: Cannot resolve symlink, removing: $link"
     rm -f "$link"
     continue
   fi
   if [ -f "$target" ]; then
-    rm "$link" && cp "$target" "$link"
+    cp "$target" "${link}.tmp" && rm "$link" && mv "${link}.tmp" "$link"
   elif [ -d "$target" ]; then
-    rm "$link" && cp -R "$target" "$link"
+    cp -R "$target" "${link}.tmp" && rm "$link" && mv "${link}.tmp" "$link"
   else
     echo "  WARNING: Dangling symlink, removing: $link -> $target"
     rm -f "$link"
   fi
-done
+done < <(find "$PORTAGO_HOME" -type l)
 
 # Fix Mason wrapper scripts that have hardcoded staging paths.
 # Replace references to the staging PORTAGO_HOME with a placeholder

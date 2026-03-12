@@ -6,12 +6,12 @@ Portago embeds a full Neovim configuration, plugins, LSP servers, debugger, and 
 
 ## Features
 
-- **Single binary** — everything is embedded: nvim, gopls, delve, treesitter parsers, 28 plugins
+- **Single binary** — everything is embedded: nvim, gopls, delve, treesitter parsers, plugins
 - **Zero config** — works out of the box with a curated Go development setup
 - **Fully offline** (bundled mode) — no internet needed after download
 - **Portable** — no system-level installation, doesn't touch your existing nvim config
 - **Two modes:**
-  - **Bundled** (~84MB) — fully self-contained, extracts to a temp cache on first run
+  - **Bundled** — fully self-contained, extracts to a temp cache on first run
   - **Flatpack** (~6MB) — lightweight, downloads dependencies on first run
 
 ## What's included
@@ -50,7 +50,7 @@ cd portago
 make build-online
 ./dist/portago-flatpack
 
-# Option 2: Build the fully bundled binary (takes ~5-10min, needs internet)
+# Option 2: Build the fully bundled binary (needs internet, takes several minutes)
 make package
 ./dist/portago
 ```
@@ -79,7 +79,7 @@ portago --version
 
 ### Bundled mode
 
-The bundled binary contains a compressed tarball (~78MB) with nvim, the full config, plugins, Mason tools, and pre-compiled treesitter parsers. On first run, it extracts to a content-addressed temp directory (`/tmp/portago-<hash>/`). Subsequent runs detect the existing cache and start instantly.
+The bundled binary contains a compressed tarball with nvim, the full config, plugins, Mason tools, and pre-compiled treesitter parsers. On first run, it extracts to a content-addressed temp directory (`/tmp/portago-<hash>/`). Subsequent runs detect the existing cache and start instantly.
 
 The cache key is a SHA256 hash of the embedded bundle, so upgrading the binary automatically invalidates the old cache.
 
@@ -132,7 +132,7 @@ make package
 make test-platforms
 ```
 
-The bundled binary contains native binaries (nvim, gopls, delve, treesitter parsers), so it must be built on each target platform. The flatpack binary is pure Go and cross-compiles from anywhere.
+The bundled binary contains native binaries (nvim, gopls, delve, treesitter parsers), so it must be built on each target platform. The flatpack binary has no CGO dependency and cross-compiles to any supported platform (macOS, Linux).
 
 ### Supported platforms
 

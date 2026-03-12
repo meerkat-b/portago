@@ -149,9 +149,13 @@ func portagoDir(persist bool) (dir string, isTemp bool, err error) {
 
 // persistentStateDir returns a directory for mutable nvim state (undo, shada,
 // swap) that survives temp cache rebuilds and reboots.
-// Respects $XDG_STATE_HOME if set, otherwise defaults to ~/.local/state.
+// Respects $XDG_STATE_HOME if set (must be absolute per XDG spec),
+// otherwise defaults to ~/.local/state/portago.
 func persistentStateDir() (string, error) {
 	if xdgState := os.Getenv("XDG_STATE_HOME"); xdgState != "" {
+		if !filepath.IsAbs(xdgState) {
+			return "", fmt.Errorf("$XDG_STATE_HOME must be an absolute path, got: %s", xdgState)
+		}
 		return filepath.Join(xdgState, "portago"), nil
 	}
 	home, err := os.UserHomeDir()
@@ -171,7 +175,11 @@ func doClean() {
 		fmt.Fprintf(os.Stderr, "portago: only cleaning temp directories\n")
 	} else {
 		dirs = append(dirs, filepath.Join(home, ".portago"))
-		dirs = append(dirs, filepath.Join(home, ".local", "state", "portago"))
+	}
+
+	// Clean the persistent state dir (respects $XDG_STATE_HOME)
+	if stateDir, err := persistentStateDir(); err == nil {
+		dirs = append(dirs, stateDir)
 	}
 
 	// Temp cache directories: /tmp/portago-<12-hex-char-hash>

@@ -19,7 +19,11 @@ nvim --headless "+Lazy! sync" +qa 2>&1
 echo "==> Installing Mason tools (gopls, delve, gomodifytags, impl)..."
 nvim --headless "+MasonToolsInstallSync" +qa 2>&1
 
-# Mason installs tree-sitter-cli which is needed to compile TreeSitter parsers.
+# Install tree-sitter-cli separately (needed to compile TreeSitter parsers,
+# not included in ensure_installed since bundled mode ships pre-compiled parsers).
+echo "==> Installing tree-sitter-cli (for parser compilation)..."
+nvim --headless "+MasonInstall tree-sitter-cli" +qa 2>&1
+
 # Wait for the binary to be available before proceeding.
 TS_CLI="$PORTAGO_DIR/data/config/mason/bin/tree-sitter"
 echo "==> Waiting for tree-sitter-cli to be available..."

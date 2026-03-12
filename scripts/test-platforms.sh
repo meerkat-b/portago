@@ -26,6 +26,16 @@ for arg in "$@"; do
   esac
 done
 
+# Verify Docker is available before running any tests
+if ! command -v docker &>/dev/null; then
+  echo "ERROR: Docker is required but not found in PATH." >&2
+  exit 1
+fi
+if ! docker info &>/dev/null; then
+  echo "ERROR: Docker daemon is not running." >&2
+  exit 1
+fi
+
 cd "$PROJECT_DIR"
 mkdir -p dist
 
@@ -62,21 +72,26 @@ for distro in "${DISTROS[@]}"; do
   printf "  %-25s" "$distro"
 
   # Pull quietly if needed
-  docker pull -q --platform linux/amd64 "$distro" >/dev/null 2>&1 || true
+  if ! docker pull -q --platform linux/amd64 "$distro" >/dev/null 2>&1; then
+    echo "WARN: pull failed, using cached image (if any)" >&2
+  fi
 
+  set +e
   output=$(docker run --rm --platform linux/amd64 \
     -v "$PROJECT_DIR/dist:/dist:ro" \
-    "$distro" /dist/portago-test-linux-amd64 --version 2>&1) || true
+    "$distro" /dist/portago-test-linux-amd64 --version 2>&1)
+  exit_code=$?
+  set -e
 
-  if echo "$output" | grep -q "portago"; then
+  if [ $exit_code -eq 0 ] && echo "$output" | grep -q "portago"; then
     echo "PASS  ($output)"
-    ((pass++))
+    pass=$((pass + 1))
   else
     echo "FAIL"
     if [ -n "$output" ]; then
       echo "        $output" | head -3
     fi
-    ((fail++))
+    fail=$((fail + 1))
     failed_distros="$failed_distros $distro"
   fi
 done
@@ -87,6 +102,11 @@ if [ $fail -gt 0 ]; then
   echo "    Failed:$failed_distros"
 fi
 
+exit_with_failure=false
+if [ $fail -gt 0 ]; then
+  exit_with_failure=true
+fi
+
 # ---------------------------------------------------------------------------
 # Step 3 (optional): Full --setup test on Ubuntu 24.04
 # ---------------------------------------------------------------------------
@@ -95,19 +115,22 @@ if $FULL; then
   echo "==> Full test: running --setup on Ubuntu 24.04..."
   echo "    (downloads nvim, installs plugins, compiles parsers)"
   echo ""
-  docker run --rm --platform linux/amd64 \
+  if ! docker run --rm --platform linux/amd64 \
     -v "$PROJECT_DIR/dist:/dist:ro" \
     ubuntu:24.04 bash -c '
       set -e
       apt-get update -qq >/dev/null
-      apt-get install -y -qq git make gcc curl ca-certificates >/dev/null 2>&1
+      apt-get install -y -qq git make gcc curl ca-certificates >/dev/null
       cp /dist/portago-test-linux-amd64 /usr/local/bin/portago
       chmod +x /usr/local/bin/portago
       portago --setup
       echo ""
       echo "==> Setup completed successfully on Ubuntu 24.04"
       portago --version
-    '
+    '; then
+    echo "ERROR: Full setup test FAILED on Ubuntu 24.04." >&2
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -126,19 +149,29 @@ if $PACKAGE; then
   GO_IMAGE="golang:${GO_MAJOR_MINOR}-bookworm"
 
   echo "    Using Docker image: $GO_IMAGE"
-  docker pull -q "$GO_IMAGE" >/dev/null 2>&1 || true
+  if ! docker pull -q "$GO_IMAGE" >/dev/null 2>&1; then
+    echo "WARN: pull failed for $GO_IMAGE, using cached image (if any)" >&2
+  fi
 
-  docker run --rm --platform linux/amd64 \
+  if ! docker run --rm --platform linux/amd64 \
     -v "$PROJECT_DIR:/src" \
     -w /src \
     -e VERSION="$VERSION" \
     "$GO_IMAGE" bash -c '
       set -e
       apt-get update -qq >/dev/null
-      apt-get install -y -qq git >/dev/null 2>&1
-      make clean 2>/dev/null || true
+      apt-get install -y -qq git >/dev/null
+      rm -rf dist/ bundle.tar.gz .staging/
       make package
-    '
+    '; then
+    echo "ERROR: Bundled build FAILED inside container." >&2
+    exit 1
+  fi
+
+  if [ ! -f "$PROJECT_DIR/dist/portago" ]; then
+    echo "ERROR: dist/portago not found. Build may have failed." >&2
+    exit 1
+  fi
 
   echo ""
   echo "==> Testing bundled binary on each distribution..."
@@ -146,32 +179,41 @@ if $PACKAGE; then
 
   bpass=0
   bfail=0
+  bfailed_distros=""
 
   for distro in "${DISTROS[@]}"; do
     printf "  %-25s" "$distro"
 
+    set +e
     output=$(docker run --rm --platform linux/amd64 \
       -v "$PROJECT_DIR/dist:/dist:ro" \
-      "$distro" bash -c '
-        cp /dist/portago /tmp/portago 2>/dev/null || cp /dist/portago /usr/local/bin/portago 2>/dev/null
-        chmod +x /tmp/portago 2>/dev/null || chmod +x /usr/local/bin/portago 2>/dev/null
-        /tmp/portago --version 2>/dev/null || /usr/local/bin/portago --version
-      ' 2>&1) || true
+      "$distro" /bin/sh -c '
+        cp /dist/portago /tmp/portago || { echo "FAIL: cannot copy binary"; exit 1; }
+        chmod +x /tmp/portago || { echo "FAIL: cannot set execute permission"; exit 1; }
+        /tmp/portago --version
+      ' 2>&1)
+    exit_code=$?
+    set -e
 
-    if echo "$output" | grep -q "fully bundled"; then
+    if [ $exit_code -eq 0 ] && echo "$output" | grep -q "fully bundled"; then
       echo "PASS  ($output)"
-      ((bpass++))
+      bpass=$((bpass + 1))
     else
       echo "FAIL"
       if [ -n "$output" ]; then
         echo "        $output" | head -3
       fi
-      ((bfail++))
+      bfail=$((bfail + 1))
+      bfailed_distros="$bfailed_distros $distro"
     fi
   done
 
   echo ""
   echo "==> Bundled results: $bpass passed, $bfail failed"
+  if [ $bfail -gt 0 ]; then
+    echo "    Failed:$bfailed_distros"
+    exit_with_failure=true
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -180,3 +222,7 @@ fi
 rm -f dist/portago-test-linux-amd64
 echo ""
 echo "==> Platform testing complete."
+
+if [ "${exit_with_failure:-false}" = true ]; then
+  exit 1
+fi
