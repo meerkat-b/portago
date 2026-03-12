@@ -55,6 +55,9 @@ echo "==> Stripping unnecessary files..."
 # Remove .git directories from plugins (saves ~40MB)
 find "$PORTAGO_HOME/data/config/lazy" -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
 
+# Remove plugin test/doc/spec directories (not needed at runtime)
+find "$PORTAGO_HOME/data/config/lazy" -type d \( -name "test" -o -name "tests" -o -name "spec" -o -name "doc" \) -exec rm -rf {} + 2>/dev/null || true
+
 # Remove clangd (164MB — this is a Go IDE)
 rm -rf "$PORTAGO_HOME/data/config/mason/packages/clangd"
 rm -f "$PORTAGO_HOME/data/config/mason/bin/clangd"
@@ -62,6 +65,14 @@ rm -f "$PORTAGO_HOME/data/config/mason/bin/clangd"
 # Remove tree-sitter-cli (18MB — only needed to compile parsers, which are pre-compiled in the bundle)
 rm -rf "$PORTAGO_HOME/data/config/mason/packages/tree-sitter-cli"
 rm -f "$PORTAGO_HOME/data/config/mason/bin/tree-sitter"
+
+# Remove lua-language-server (20MB — not needed for a Go IDE)
+rm -rf "$PORTAGO_HOME/data/config/mason/packages/lua-language-server"
+rm -f "$PORTAGO_HOME/data/config/mason/bin/lua-language-server"
+
+# Remove stylua (7.7MB — Lua formatter, not needed for Go)
+rm -rf "$PORTAGO_HOME/data/config/mason/packages/stylua"
+rm -f "$PORTAGO_HOME/data/config/mason/bin/stylua"
 
 # Resolve symlinks to real files throughout the data directory.
 # nvim-treesitter and other plugins create symlinks that will break

@@ -262,7 +262,7 @@ func doSetupOnline(portagoHome, stampFile string) error {
 	}
 
 	// Install Mason tools
-	fmt.Println("==> Installing Mason tools (gopls, delve, stylua, tree-sitter-cli)...")
+	fmt.Println("==> Installing Mason tools (gopls, delve, gomodifytags, impl, tree-sitter-cli)...")
 	if err := runNvimHeadless(portagoHome, env, "+MasonToolsInstallSync", "+qa"); err != nil {
 		return fmt.Errorf("installing mason tools: %w", err)
 	}
