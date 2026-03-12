@@ -74,6 +74,69 @@ rm -f "$PORTAGO_HOME/data/config/mason/bin/lua-language-server"
 rm -rf "$PORTAGO_HOME/data/config/mason/packages/stylua"
 rm -f "$PORTAGO_HOME/data/config/mason/bin/stylua"
 
+# Strip plugin metadata files (README, LICENSE, CHANGELOG, .github, etc.)
+echo "==> Stripping plugin metadata..."
+find "$PORTAGO_HOME/data/config/lazy" -type d -name ".github" -exec rm -rf {} + 2>/dev/null || true
+find "$PORTAGO_HOME/data/config/lazy" -maxdepth 2 -type f \( \
+  -iname "README*" -o -iname "LICENSE*" -o -iname "CHANGELOG*" \
+  -o -iname "CONTRIBUTING*" -o -iname "CODE_OF_CONDUCT*" \
+  -o -name "*.md" -o -name ".editorconfig" -o -name ".luacheckrc" \
+  -o -name ".stylua.toml" -o -name ".gitignore" \
+  \) -delete 2>/dev/null || true
+# Remove lazy.nvim lockfile/manifest (large, regenerated on use)
+rm -f "$PORTAGO_HOME/data/config/lazy/lazy.nvim/manifest"
+
+# Strip Go tool binaries (remove debug symbols and symbol tables)
+echo "==> Stripping Go tool binaries..."
+find "$PORTAGO_HOME/data/config/mason/packages" -type f -perm +111 | while read -r bin; do
+  if file "$bin" | grep -q "Mach-O\|ELF"; then
+    strip "$bin" 2>/dev/null || true
+  fi
+done
+
+# Prune nvim runtime to only languages needed for a Go IDE
+echo "==> Pruning nvim runtime to Go-relevant languages..."
+NVIM_RUNTIME="$PORTAGO_HOME/nvim/share/nvim/runtime"
+KEEP_LANGS="go lua vim markdown sh bash zsh yaml json toml diff help"
+
+for dir in syntax ftplugin indent compiler; do
+  if [ -d "$NVIM_RUNTIME/$dir" ]; then
+    # Build a find expression that excludes the files we want to keep
+    FIND_EXCLUDE=""
+    for lang in $KEEP_LANGS; do
+      FIND_EXCLUDE="$FIND_EXCLUDE -not -name ${lang}.vim -not -name ${lang}.lua"
+    done
+    # Keep files that don't match any language we want
+    find "$NVIM_RUNTIME/$dir" -maxdepth 1 -type f $FIND_EXCLUDE -delete 2>/dev/null || true
+    # Remove subdirectories for languages we don't need (some ftplugins have subdirs)
+    find "$NVIM_RUNTIME/$dir" -mindepth 1 -maxdepth 1 -type d | while read -r subdir; do
+      dirname="$(basename "$subdir")"
+      keep=false
+      for lang in $KEEP_LANGS; do
+        if [ "$dirname" = "$lang" ]; then keep=true; break; fi
+      done
+      if [ "$keep" = false ]; then rm -rf "$subdir"; fi
+    done
+  fi
+done
+
+# Remove nvim runtime directories not needed for a Go IDE
+rm -rf "$NVIM_RUNTIME/tutor"
+rm -rf "$NVIM_RUNTIME/keymap"
+
+# Remove duplicate parser .so files from nvim/lib/ (superseded by site/parser/)
+echo "==> Removing duplicate nvim parsers superseded by site/..."
+NVIM_PARSERS="$PORTAGO_HOME/nvim/lib/nvim/parser"
+SITE_PARSERS="$PORTAGO_HOME/data/config/site/parser"
+if [ -d "$NVIM_PARSERS" ] && [ -d "$SITE_PARSERS" ]; then
+  for so in "$NVIM_PARSERS"/*.so; do
+    name="$(basename "$so")"
+    if [ -f "$SITE_PARSERS/$name" ]; then
+      rm -f "$so"
+    fi
+  done
+fi
+
 # Resolve symlinks to real files throughout the data directory.
 # nvim-treesitter and other plugins create symlinks that will break
 # when extracted on a different machine.
@@ -107,6 +170,20 @@ if [ -d "$TS_QUERIES" ]; then
   rm -rf "$SITE_QUERIES"
   mkdir -p "$SITE_QUERIES"
   cp -R "$TS_QUERIES"/* "$SITE_QUERIES"/
+fi
+
+# Prune treesitter queries to only the languages we use
+echo "==> Pruning treesitter queries to used languages..."
+USED_QUERY_LANGS="bash diff go lua luadoc markdown markdown_inline query vim vimdoc"
+if [ -d "$SITE_QUERIES" ]; then
+  for qdir in "$SITE_QUERIES"/*/; do
+    lang="$(basename "$qdir")"
+    keep=false
+    for used in $USED_QUERY_LANGS; do
+      if [ "$lang" = "$used" ]; then keep=true; break; fi
+    done
+    if [ "$keep" = false ]; then rm -rf "$qdir"; fi
+  done
 fi
 
 # Remove cache/state artifacts
